@@ -852,7 +852,7 @@ static bool isValuePotentiallyUsedAsPointer(Value val) {
       continue;
     seen.insert(cur);
     for (Operation *user : cur.getUsers()) {
-      if (isa<RegionBranchOpInterface>(user->getParentOp()))
+      if (auto parentBranchIface = dyn_cast<RegionBranchOpInterface>(user->getParentOp()))
         if (auto termIface =
                 dyn_cast<RegionBranchTerminatorOpInterface>(user)) {
           SmallVector<RegionSuccessor> successors;
@@ -864,9 +864,16 @@ static bool isValuePotentiallyUsedAsPointer(Value val) {
           for (auto &successor : successors) {
             OperandRange operandRange =
                 termIface.getSuccessorOperands(successor);
+#if LLVM_VERSION_MAJOR >= 23
+            ValueRange targetValues = successor.isParent()
+                                          ? parentOp->getResults()
+                                          : ValueRange(parentBranchIface.getSuccessorInputs(successor));
+#else
             ValueRange targetValues = successor.isParent()
                                           ? parentOp->getResults()
                                           : successor.getSuccessorInputs();
+#endif
+
             assert(operandRange.size() == targetValues.size());
             for (auto &&[prev, post] : llvm::zip(operandRange, targetValues)) {
               if (prev == cur) {
@@ -969,7 +976,7 @@ getPotentialTerminatorUsers(Operation *op, Value parent) {
 
   if (auto termIface = dyn_cast<ADDataFlowOpInterface>(op->getParentOp())) {
     return termIface.getPotentialTerminatorUsers(op, parent);
-  } else if (isa<RegionBranchOpInterface>(op->getParentOp())) {
+  } else if (auto parentBranchIface = dyn_cast<RegionBranchOpInterface>(op->getParentOp())) {
     if (auto termIface = dyn_cast<RegionBranchTerminatorOpInterface>(op)) {
       SmallVector<RegionSuccessor> successors;
       termIface.getSuccessorRegions(
@@ -980,9 +987,15 @@ getPotentialTerminatorUsers(Operation *op, Value parent) {
       SmallVector<Value> results;
       for (auto &successor : successors) {
         OperandRange operandRange = termIface.getSuccessorOperands(successor);
+#if LLVM_VERSION_MAJOR >= 23
+        ValueRange targetValues = successor.isParent()
+                                      ? parentOp->getResults()
+                                      : ValueRange(parentBranchIface.getSuccessorInputs(successor));
+#else
         ValueRange targetValues = successor.isParent()
                                       ? parentOp->getResults()
                                       : successor.getSuccessorInputs();
+#endif
         assert(operandRange.size() == targetValues.size());
         for (auto &&[prev, post] : llvm::zip(operandRange, targetValues)) {
           if (prev == parent) {
@@ -1065,8 +1078,13 @@ static SmallVector<Value> getPotentialIncomingValues(OpResult res) {
               block.getTerminator())) {
         // TODO: the interface may also tell us which regions are allowed to
         // yield parent op results, and which only branch to other regions.
+#if LLVM_VERSION_MAJOR >= 23
+        auto successorOperands = llvm::to_vector(iface.getSuccessorOperands(
+            RegionSuccessor::parent()));
+#else
         auto successorOperands = llvm::to_vector(iface.getSuccessorOperands(
             RegionSuccessor::parent(iface->getResults())));
+#endif
         // TODO: understand/document the assumption of how operands flow.
 
         if (successorOperands.size() != owner->getNumResults()) {
@@ -1131,7 +1149,13 @@ static SmallVector<Value> getPotentialIncomingValues(BlockArgument arg) {
           continue;
 
         unsigned operandOffset = static_cast<unsigned>(-1);
-        for (const auto &en : llvm::enumerate(successor.getSuccessorInputs())) {
+
+#if LLVM_VERSION_MAJOR >= 23
+        ValueRange successorInputs = ValueRange(iface.getSuccessorInputs(successor));
+#else
+        ValueRange successorInputs = successor.getSuccessorInputs();
+#endif
+        for (const auto &en : llvm::enumerate(successorInputs)) {
           if (en.value() != arg)
             continue;
           operandOffset = en.index();
@@ -1146,7 +1170,7 @@ static SmallVector<Value> getPotentialIncomingValues(BlockArgument arg) {
           // XXX: this assumes a contiguous slice of operands is mapped 1-1
           // without swaps to a contiguous slice of entry block arguments.
           assert(iface.getEntrySuccessorOperands(region).size() ==
-                 successor.getSuccessorInputs().size());
+                 successorInputs.size());
           potentialSources.insert(
               iface.getEntrySuccessorOperands(region)[operandOffset]);
         } else {
@@ -1162,7 +1186,7 @@ static SmallVector<Value> getPotentialIncomingValues(BlockArgument arg) {
               // 1-1 without swaps to a contiguous slice of entry block
               // arguments.
               assert(terminator.getSuccessorOperands(region).size() ==
-                     successor.getSuccessorInputs().size());
+                     successorInputs.size());
               potentialSources.insert(
                   terminator.getSuccessorOperands(region)[operandOffset]);
             } else {

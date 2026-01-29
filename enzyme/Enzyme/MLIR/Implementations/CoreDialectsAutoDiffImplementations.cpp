@@ -268,9 +268,8 @@ void mlir::enzyme::detail::regionTerminatorForwardHandler(
 
   llvm::SmallDenseSet<unsigned> operandsToShadow;
   auto termIface = dyn_cast<RegionBranchTerminatorOpInterface>(origTerminator);
-  if (termIface &&
-      isa<RegionBranchOpInterface>(origTerminator->getParentOp())) {
-
+  auto parentBranchIface = dyn_cast<RegionBranchOpInterface>(origTerminator->getParentOp());
+  if (termIface && parentBranchIface) {
     SmallVector<RegionSuccessor> successors;
     termIface.getSuccessorRegions(
         SmallVector<Attribute>(origTerminator->getNumOperands(), Attribute()),
@@ -278,9 +277,15 @@ void mlir::enzyme::detail::regionTerminatorForwardHandler(
 
     for (auto &successor : successors) {
       OperandRange operandRange = termIface.getSuccessorOperands(successor);
+#if LLVM_VERSION_MAJOR >= 23
+      ValueRange targetValues = successor.isParent()
+                                    ? parentOp->getResults()
+                                    : ValueRange(parentBranchIface.getSuccessorInputs(successor));
+#else
       ValueRange targetValues = successor.isParent()
                                     ? parentOp->getResults()
                                     : successor.getSuccessorInputs();
+#endif
       assert(operandRange.size() == targetValues.size());
       for (auto &&[i, target] : llvm::enumerate(targetValues)) {
         if (!gutils->isConstantValue(target))
@@ -337,9 +342,15 @@ LogicalResult mlir::enzyme::detail::controlFlowForwardHandler(
     OperandRange operandRange =
         regionBranchOp.getEntrySuccessorOperands(successor);
 
+#if LLVM_VERSION_MAJOR >= 23
+    ValueRange targetValues = successor.isParent()
+                                  ? op->getResults()
+                                  : regionBranchOp.getSuccessorInputs(successor);
+#else
     ValueRange targetValues = successor.isParent()
                                   ? op->getResults()
                                   : successor.getSuccessorInputs();
+#endif
 
     // Need to know which of the arguments are being forwarded to from
     // operands.
